@@ -3,20 +3,18 @@ name: KORKU MOTORU
 on:
   workflow_dispatch:
   schedule:
-    # Her gün 20:00 Türkiye saati (17:00 UTC)
-    - cron: '0 17 * * *'
+    - cron: '0 6,9 * * *' # 09:00 ve 12:00 Türkiye saati (UTC+3)
 
 permissions:
   contents: write
 
 concurrency:
-  group: korku-motoru
+  group: korku-motoru-yayin
   cancel-in-progress: false
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    # 45 sahne görseli + 45 klip + ses/video birleştirme için geniş süre.
     timeout-minutes: 180
     steps:
       - name: Depoyu indir
@@ -25,13 +23,13 @@ jobs:
           ref: main
           persist-credentials: true
 
-      - name: Düzeltilmiş kaynak ZIP dosyasını aç
+      - name: Kaynak ZIP dosyasını aç
         run: |
-          test -f KORKU_MOTORU_BATU_DUZELTILMIS_v3.zip
-          unzip -oq KORKU_MOTORU_BATU_DUZELTILMIS_v3.zip -d .
+          test -f KORKU_MOTORU_BATU_DUZELTILMIS_v4.zip
+          unzip -oq KORKU_MOTORU_BATU_DUZELTILMIS_v4.zip -d .
           test -f KORKU_MOTORU/run.py
           test -f KORKU_MOTORU/korku_motoru/engine.py
-          test -f KORKU_MOTORU/korku_motoru/stories/video_001.json
+          test -f KORKU_MOTORU/korku_motoru/stories/QUEUE.json
 
       - name: Python kur
         uses: actions/setup-python@v5
@@ -40,7 +38,7 @@ jobs:
           cache: pip
           cache-dependency-path: KORKU_MOTORU/requirements.txt
 
-      - name: FFmpeg kur
+      - name: FFmpeg ve fontları kur
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg fonts-dejavu-core
@@ -51,8 +49,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # Her çalıştırmada önceki başarılı/yarım kalmış görseller ve klipler geri gelir.
-      - name: Önceki üretim dosyalarını geri yükle
+      - name: Önceki görselleri ve klipleri geri yükle
         uses: actions/cache/restore@v4
         with:
           path: |
@@ -62,19 +59,23 @@ jobs:
           restore-keys: |
             korku-motoru-${{ hashFiles('KORKU_MOTORU/korku_motoru/stories/*.json') }}-
 
-      - name: Python ve hikâye kontrolü
+      - name: Kod ve 20 hikâye kontrolü
         working-directory: KORKU_MOTORU
         run: |
           python -m compileall -q korku_motoru run.py
           python - <<'PY'
           import json
           from pathlib import Path
-          d=json.loads(Path('korku_motoru/stories/video_001.json').read_text(encoding='utf-8'))
-          assert len(d['scenes']) == 45, 'Sahne sayısı 45 değil'
-          assert d['duration_seconds'] == 180, 'Süre 180 saniye değil'
-          assert d['character'] == 'Batu', 'Karakter adı Batu değil'
-          assert [s['n'] for s in d['scenes']] == list(range(1,46)), 'Sahne sırası hatalı'
-          print('Kod ve hikâye kontrolleri başarılı.')
+          q=json.loads(Path('korku_motoru/stories/QUEUE.json').read_text(encoding='utf-8'))
+          assert len(q)==20, f'20 hikâye bekleniyordu, bulunan: {len(q)}'
+          for item in q:
+              p=Path('korku_motoru/stories')/(item['id']+'.json')
+              assert p.exists(), f'Eksik hikâye: {p}'
+              d=json.loads(p.read_text(encoding='utf-8'))
+              if 'beats' in d: assert len(d['beats'])==15 and all(len(b['narration'])==3 for b in d['beats'])
+              else: assert len(d['scenes'])==45
+              assert d['duration_seconds']==180 and d['character']=='Batu'
+          print('20 hikâye, karakter ve süre kontrolleri başarılı.')
           PY
 
       - name: YouTube OAuth ön kontrolü
@@ -88,15 +89,13 @@ jobs:
           keys=['YOUTUBE_CLIENT_ID','YOUTUBE_CLIENT_SECRET','YOUTUBE_REFRESH_TOKEN']
           missing=[k for k in keys if not os.getenv(k,'').strip()]
           if missing: raise SystemExit('Eksik GitHub Secrets: '+', '.join(missing))
-          r=requests.post('https://oauth2.googleapis.com/token',data={
-            'grant_type':'refresh_token','client_id':os.environ['YOUTUBE_CLIENT_ID'],
-            'client_secret':os.environ['YOUTUBE_CLIENT_SECRET'],'refresh_token':os.environ['YOUTUBE_REFRESH_TOKEN']},timeout=30)
+          r=requests.post('https://oauth2.googleapis.com/token',data={'grant_type':'refresh_token','client_id':os.environ['YOUTUBE_CLIENT_ID'],'client_secret':os.environ['YOUTUBE_CLIENT_SECRET'],'refresh_token':os.environ['YOUTUBE_REFRESH_TOKEN']},timeout=30)
           j=r.json()
           if not r.ok or not j.get('access_token'): raise SystemExit('YouTube OAuth başarısız: '+str(j.get('error_description',j.get('error'))))
           print('YouTube OAuth bağlantısı başarılı.')
           PY
 
-      - name: Video üret ve yayınla
+      - name: Sıradaki hikâyeyi üret ve YouTube’a yükle
         working-directory: KORKU_MOTORU
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -104,13 +103,14 @@ jobs:
           CF_IMAGE_MODEL: '@cf/black-forest-labs/flux-2-klein-4b'
           IMAGE_WORKERS: '4'
           TTS_VOICE: 'tr-TR-AhmetNeural'
+          TTS_RATE: '-7%'
+          TTS_PITCH: '-3Hz'
           YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
           YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
           YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
           YOUTUBE_PRIVACY: public
-        run: python run.py
+        run: python run.py --next
 
-      # Bu adım hata olsa bile tamamlanan görselleri/klipleri sonraki çalıştırmaya taşır.
       - name: Üretim önbelleğini kaydet
         if: always()
         uses: actions/cache/save@v4
@@ -129,7 +129,6 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-      # Yayın geçmişi kalıcı olmalı; aksi halde aynı bölüm ertesi gün yeniden yüklenebilir.
       - name: Yayın geçmişini depoya kaydet
         if: success()
         run: |
