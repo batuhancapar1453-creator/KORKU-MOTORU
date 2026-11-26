@@ -25,8 +25,8 @@ jobs:
 
       - name: Kaynak ZIP dosyasını aç
         run: |
-          test -f KORKU_MOTORU_BATU_DUZELTILMIS_v4.zip
-          unzip -oq KORKU_MOTORU_BATU_DUZELTILMIS_v4.zip -d .
+          test -f KORKU_MOTORU_BATU_DUZELTILMIS_v5.zip
+          unzip -oq KORKU_MOTORU_BATU_DUZELTILMIS_v5.zip -d .
           test -f KORKU_MOTORU/run.py
           test -f KORKU_MOTORU/korku_motoru/engine.py
           test -f KORKU_MOTORU/korku_motoru/stories/QUEUE.json
@@ -53,8 +53,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: |
-            KORKU_MOTORU/output/images/
-            KORKU_MOTORU/output/clips/
+            KORKU_MOTORU/output/episodes/
           key: korku-motoru-${{ hashFiles('KORKU_MOTORU/korku_motoru/stories/*.json') }}-${{ github.run_id }}
           restore-keys: |
             korku-motoru-${{ hashFiles('KORKU_MOTORU/korku_motoru/stories/*.json') }}-
@@ -116,8 +115,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: |
-            KORKU_MOTORU/output/images/
-            KORKU_MOTORU/output/clips/
+            KORKU_MOTORU/output/episodes/
           key: korku-motoru-${{ hashFiles('KORKU_MOTORU/korku_motoru/stories/*.json') }}-${{ github.run_id }}
 
       - name: Çıktıları sakla
