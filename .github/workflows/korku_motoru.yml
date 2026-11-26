@@ -27,8 +27,8 @@ jobs:
 
       - name: Düzeltilmiş kaynak ZIP dosyasını aç
         run: |
-          test -f KORKU_MOTORU_BATU_DUZELTILMIS_v2.zip
-          unzip -oq KORKU_MOTORU_BATU_DUZELTILMIS_v2.zip -d .
+          test -f KORKU_MOTORU_BATU_DUZELTILMIS_v3.zip
+          unzip -oq KORKU_MOTORU_BATU_DUZELTILMIS_v3.zip -d .
           test -f KORKU_MOTORU/run.py
           test -f KORKU_MOTORU/korku_motoru/engine.py
           test -f KORKU_MOTORU/korku_motoru/stories/video_001.json
