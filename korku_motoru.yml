@@ -1,0 +1,120 @@
+name: KORKU MOTORU - Günlük 3 Dakikalık Shorts
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Her gün Türkiye saati 20:00 (UTC 17:00)
+    - cron: '0 17 * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: korku-motoru-daily-publisher
+  cancel-in-progress: false
+
+jobs:
+  video:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Depoyu indir
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: true
+
+      - name: Python kur
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: FFmpeg kur
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-dejavu-core
+
+      - name: Python bağımlılıklarını kur
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Önceki sahne ve klip önbelleğini geri yükle
+        uses: actions/cache@v4
+        with:
+          path: |
+            output/images/
+            output/clips/
+          key: korku-motoru-${{ hashFiles('korku_motoru/stories/*.json') }}-${{ github.run_id }}
+          restore-keys: |
+            korku-motoru-${{ hashFiles('korku_motoru/stories/*.json') }}-
+
+      - name: Kaynak ve YAML doğrulaması
+        run: |
+          python -m compileall -q korku_motoru run.py
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('korku_motoru/stories/video_001.json')
+          d=json.loads(p.read_text(encoding='utf-8'))
+          assert len(d['scenes']) == 45
+          assert d['duration_seconds'] == 180
+          assert d['character'] == 'Batu'
+          assert [x['n'] for x in d['scenes']] == list(range(1,46))
+          print('45 sahne, 180 saniye ve Batu karakter kontrolü başarılı.')
+          PY
+
+      - name: YouTube OAuth ön kontrolü
+        env:
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+        run: |
+          python - <<'PY'
+          import os, requests
+          keys=['YOUTUBE_CLIENT_ID','YOUTUBE_CLIENT_SECRET','YOUTUBE_REFRESH_TOKEN']
+          missing=[k for k in keys if not os.getenv(k,'').strip()]
+          if missing: raise SystemExit('Eksik GitHub Secrets: '+', '.join(missing))
+          r=requests.post('https://oauth2.googleapis.com/token',data={
+            'grant_type':'refresh_token','client_id':os.environ['YOUTUBE_CLIENT_ID'],
+            'client_secret':os.environ['YOUTUBE_CLIENT_SECRET'],'refresh_token':os.environ['YOUTUBE_REFRESH_TOKEN']},timeout=30)
+          j=r.json()
+          if not r.ok or not j.get('access_token'): raise SystemExit('YouTube OAuth başarısız: '+str(j.get('error_description',j.get('error'))))
+          print('YouTube OAuth bağlantısı başarılı.')
+          PY
+
+      - name: AI görselleri üret, 2D hareketlendir, seslendir ve yayınla
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_IMAGE_MODEL: '@cf/black-forest-labs/flux-2-klein-4b'
+          IMAGE_WORKERS: '4'
+          TTS_VOICE: 'tr-TR-AhmetNeural'
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+          YOUTUBE_PRIVACY: public
+        run: python run.py
+
+      - name: Üretilen videoyu ve kayıtları sakla
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: korku-motoru-video-${{ github.run_id }}
+          path: |
+            output/KORKU_MOTORU_BATU_VIDEO_001.mp4
+            output/images/
+            output/captions.srt
+            data/history.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Yayın geçmişini depoya kaydet
+        if: success()
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add data/history.json
+          git diff --cached --quiet || git commit -m 'Korku Motoru: günlük video yayın kaydı'
+          git push
