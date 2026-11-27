@@ -1,13 +1,23 @@
-name: KORKU MOTORU - Orijinal Motor Render Testi
+name: Yumurta-Stili / KORKU MOTORU - Render
 
 on:
   workflow_dispatch:
+    inputs:
+      story:
+        description: "Hikâye klasörü (KORKU için gece-vardiyasi, örnek için is-odasi)"
+        required: false
+        default: "is-odasi"
+        type: string
 
 permissions:
   contents: read
 
+concurrency:
+  group: yumurta-stili-render
+  cancel-in-progress: false
+
 jobs:
-  render-test:
+  render:
     runs-on: ubuntu-latest
     timeout-minutes: 180
 
@@ -15,88 +25,150 @@ jobs:
       - name: Depoyu indir
         uses: actions/checkout@v4
 
-      - name: ZIP dosyasini ac ve kontrol et
+      - name: Proje klasörünü ve hikâyeyi bul
+        id: project
         shell: bash
+        env:
+          REQUESTED_STORY: ${{ inputs.story }}
         run: |
           set -euo pipefail
 
-          ZIP_FILE=$(find . -maxdepth 1 -type f -iname "*.zip" | head -n 1)
-          if [ -z "$ZIP_FILE" ]; then
-            echo "HATA: Ana dizinde ZIP dosyasi bulunamadi."
+          ROOT=""
+          for archive in "$GITHUB_WORKSPACE"/*.zip; do
+            [ -f "$archive" ] || continue
+            if unzip -Z1 "$archive" | grep -Eq '(^|/)engine/render\.mjs$'; then
+              mkdir -p "$GITHUB_WORKSPACE/extracted"
+              unzip -oq "$archive" -d "$GITHUB_WORKSPACE/extracted"
+              break
+            fi
+          done
+
+          for candidate in \
+            "$GITHUB_WORKSPACE/extracted/KORKU_MOTORU" \
+            "$GITHUB_WORKSPACE/extracted/yumurta-stili-main" \
+            "$GITHUB_WORKSPACE/KORKU_MOTORU" \
+            "$GITHUB_WORKSPACE/yumurta-stili-main" \
+            "$GITHUB_WORKSPACE"
+          do
+            if [ -f "$candidate/engine/render.mjs" ]; then
+              ROOT="$candidate"
+              break
+            fi
+          done
+
+          if [ -z "$ROOT" ]; then
+            echo "::error::engine/render.mjs bulunamadı. ZIP içeriğini depo köküne veya KORKU_MOTORU klasörüne koyun."
             exit 1
           fi
 
-          echo "Acilan dosya: $ZIP_FILE"
-          unzip -q "$ZIP_FILE" -d extracted
+          STORY="${REQUESTED_STORY:-is-odasi}"
+          if [ ! -f "$ROOT/stories/$STORY/story.js" ]; then
+            if [ -f "$ROOT/stories/gece-vardiyasi/story.js" ]; then
+              STORY="gece-vardiyasi"
+            elif [ -f "$ROOT/stories/is-odasi/story.js" ]; then
+              STORY="is-odasi"
+            else
+              echo "::error::Geçerli hikâye bulunamadı: $ROOT/stories/$STORY/story.js"
+              find "$ROOT/stories" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' || true
+              exit 1
+            fi
+          fi
 
-          ENGINE="extracted/KORKU_MOTORU/engine"
-          STORY="extracted/KORKU_MOTORU/stories/gece-vardiyasi"
-
-          test -f "$ENGINE/package.json" || { echo "Motor package.json bulunamadi"; find extracted -name package.json -print; exit 1; }
-          test -f "$ENGINE/render.mjs" || { echo "render.mjs bulunamadi"; exit 1; }
-          test -f "$STORY/story.js" || { echo "gece-vardiyasi/story.js bulunamadi"; find extracted/KORKU_MOTORU/stories -maxdepth 3 -type f -print; exit 1; }
-
-          echo "Motor ve hikaye dosyalari bulundu."
-          echo "Chrome baslatma kodu orijinal Puppeteer akisinda birakilacak."
+          echo "root=$ROOT" >> "$GITHUB_OUTPUT"
+          echo "story=$STORY" >> "$GITHUB_OUTPUT"
+          echo "Proje: $ROOT"
+          echo "Hikâye: $STORY"
 
       - name: Node.js kur
         uses: actions/setup-node@v4
         with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: extracted/KORKU_MOTORU/engine/package.json
+          node-version: "20"
 
-      - name: Chrome kur
-        uses: browser-actions/setup-chrome@v1
-        id: chrome
+      - name: Python kur
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-      - name: Linux Chrome uyumluluk sarmalayicisi
-        shell: bash
-        env:
-          CHROME_BIN: ${{ steps.chrome.outputs.chrome-path }}
-        run: |
-          set -euo pipefail
-
-          if [ -z "$CHROME_BIN" ] || [ ! -x "$CHROME_BIN" ]; then
-            echo "HATA: Chrome bulunamadi: ${CHROME_BIN:-bos}"
-            exit 1
-          fi
-
-          sudo tee /usr/local/bin/chrome-github > /dev/null <<EOF
-          #!/bin/sh
-          exec "$CHROME_BIN" --no-sandbox --disable-setuid-sandbox --disable-dev-shm-usage "$@"
-          EOF
-
-          sudo chmod +x /usr/local/bin/chrome-github
-          echo "Chrome sarmalayicisi hazir."
-
-      - name: FFmpeg kur
+      - name: FFmpeg ve temel paketleri kur
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y ffmpeg
 
-      - name: Motor bagimliliklarini yukle
-        working-directory: extracted/KORKU_MOTORU/engine
-        run: npm install --no-audit --no-fund
+      - name: Chrome kur
+        id: chrome
+        uses: browser-actions/setup-chrome@v1
+        with:
+          chrome-version: stable
+          install-dependencies: true
 
-      - name: Orijinal Puppeteer render akisini calistir
-        working-directory: extracted/KORKU_MOTORU/engine
+      - name: Chrome için headless başlatma sarmalayıcısı
+        shell: bash
         env:
-          CHROME_PATH: /usr/local/bin/chrome-github
+          REAL_CHROME: ${{ steps.chrome.outputs.chrome-path }}
+        run: |
+          set -euo pipefail
+          test -x "$REAL_CHROME"
+          WRAPPER="$RUNNER_TEMP/chrome-headless"
+          printf '#!/usr/bin/env bash\nexec "%s" --no-sandbox --disable-setuid-sandbox --disable-dev-shm-usage "$@"\n' "$REAL_CHROME" > "$WRAPPER"
+          chmod +x "$WRAPPER"
+          echo "CHROME_PATH=$WRAPPER" >> "$GITHUB_ENV"
+          "$WRAPPER" --version
+
+      - name: Node paketlerini kur
+        working-directory: ${{ steps.project.outputs.root }}/engine
+        run: npm ci --no-audit --no-fund
+
+      - name: Ses miksleme bağımlılığını kur
+        run: python -m pip install --upgrade pip numpy
+
+      - name: Hikâye ve motor dosyalarını doğrula
+        shell: bash
+        env:
+          PROJECT_ROOT: ${{ steps.project.outputs.root }}
+          STORY: ${{ steps.project.outputs.story }}
+        run: |
+          set -euo pipefail
+          test -f "$PROJECT_ROOT/engine/render.mjs"
+          test -f "$PROJECT_ROOT/engine/index.html"
+          test -f "$PROJECT_ROOT/stories/$STORY/story.js"
+          test -f "$PROJECT_ROOT/stories/$STORY/voice/voice.wav" || echo "UYARI: voice.wav yok; video sessiz üretilecek."
+          echo "Motor ve hikâye dosyaları bulundu."
+
+      - name: Ses zamanlamalarını çıkar
+        working-directory: ${{ steps.project.outputs.root }}/engine
+        env:
+          STORY: ${{ steps.project.outputs.story }}
+        run: node render.mjs "$STORY" --cues
+
+      - name: Müzik ve efektleri sesle birleştir
+        working-directory: ${{ steps.project.outputs.root }}/engine
+        env:
+          PROJECT_ROOT: ${{ steps.project.outputs.root }}
+          STORY: ${{ steps.project.outputs.story }}
         shell: bash
         run: |
           set -euo pipefail
-          node render.mjs gece-vardiyasi --stills=1,5,10,16,23,30,37 --scale=0.5 2>&1 | tee render-test.log
+          STORY_DIR="$PROJECT_ROOT/stories/$STORY"
+          if [ -f "$STORY_DIR/voice/voice.wav" ] && [ -f "$STORY_DIR/audio/cues.json" ]; then
+            python audio/mix.py "$STORY_DIR"
+          else
+            echo "Ses dosyası veya cues.json yok; miksleme atlandı."
+          fi
 
-      - name: Test ciktisini ve loglari kaydet
+      - name: Videoyu render et
+        working-directory: ${{ steps.project.outputs.root }}/engine
+        env:
+          STORY: ${{ steps.project.outputs.story }}
+        run: node render.mjs "$STORY"
+
+      - name: Oluşan videoyu ve render kayıtlarını yükle
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: korku-motoru-orijinal-render-testi
+          name: render-${{ steps.project.outputs.story }}
           path: |
-            extracted/KORKU_MOTORU/stories/gece-vardiyasi/out/**
-            extracted/KORKU_MOTORU/engine/render-test.log
+            ${{ steps.project.outputs.root }}/stories/${{ steps.project.outputs.story }}/out/
           if-no-files-found: warn
           retention-days: 7
