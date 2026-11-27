@@ -1,3 +1,4 @@
+
 name: KORKU MOTORU - Otomatik Shorts
 
 on:
@@ -15,7 +16,7 @@ concurrency:
 
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 180
 
     steps:
@@ -119,9 +120,23 @@ jobs:
 
       - name: FFmpeg kur
         if: steps.episode.outputs.done != 'true'
+        shell: bash
         run: |
+          set -euo pipefail
+
+          # Microsoft paket deposunun bozuk kaynağını devre dışı bırak.
+          if [ -d /etc/apt/sources.list.d ]; then
+            while IFS= read -r SOURCE; do
+              if [ -n "$SOURCE" ]; then
+                echo "Sorunlu paket kaynağı kaldırılıyor: $SOURCE"
+                sudo rm -f "$SOURCE"
+              fi
+            done < <(sudo grep -RIl 'packages.microsoft.com' /etc/apt/sources.list.d 2>/dev/null || true)
+          fi
+
           sudo apt-get update
           sudo apt-get install -y ffmpeg
+          ffmpeg -version
 
       - name: Chrome kur
         if: steps.episode.outputs.done != 'true'
@@ -138,6 +153,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           test -x "$REAL_CHROME"
 
           printf '#!/usr/bin/env bash\nexec "%s" --no-sandbox --disable-setuid-sandbox --disable-dev-shm-usage "$@"\n' "$REAL_CHROME" > "$RUNNER_TEMP/chrome-headless"
@@ -149,9 +165,12 @@ jobs:
         if: steps.episode.outputs.done != 'true'
         env:
           ROOT: ${{ steps.project.outputs.root }}
+        shell: bash
         run: |
           set -euo pipefail
+
           npm ci --no-audit --no-fund --prefix "$ROOT/engine"
+
           python -m pip install --upgrade pip
           python -m pip install numpy edge-tts google-api-python-client google-auth
 
@@ -164,6 +183,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           for key in YOUTUBE_CLIENT_ID YOUTUBE_CLIENT_SECRET YOUTUBE_REFRESH_TOKEN; do
             if [ -z "${!key:-}" ]; then
               echo "::error::GitHub Secret eksik: $key"
@@ -176,15 +196,19 @@ jobs:
         env:
           ROOT: ${{ steps.project.outputs.root }}
           EPISODE: ${{ steps.episode.outputs.episode }}
+        shell: bash
         run: |
+          set -euo pipefail
           python "$ROOT/automation/prepare_episode.py" "$EPISODE"
 
       - name: Render öncesi dosyaları doğrula
         if: steps.episode.outputs.done != 'true'
         env:
           ROOT: ${{ steps.project.outputs.root }}
+        shell: bash
         run: |
           set -euo pipefail
+
           test -f "$ROOT/stories/son-gorulme/story.js"
           test -s "$ROOT/stories/son-gorulme/voice/voice.wav"
           test -s "$ROOT/stories/son-gorulme/voice/words.json"
@@ -198,7 +222,9 @@ jobs:
         if: steps.episode.outputs.done != 'true'
         env:
           ROOT: ${{ steps.project.outputs.root }}
-        run: python "$ROOT/engine/audio/mix.py" "$ROOT/stories/son-gorulme"
+        shell: bash
+        run: |
+          python "$ROOT/engine/audio/mix.py" "$ROOT/stories/son-gorulme"
 
       - name: 1080x1920 videoyu render et
         if: steps.episode.outputs.done != 'true'
@@ -238,7 +264,9 @@ jobs:
           YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
           YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
           YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
-        run: python "$ROOT/automation/upload_youtube.py" "$EPISODE"
+        shell: bash
+        run: |
+          python "$ROOT/automation/upload_youtube.py" "$EPISODE"
 
       - name: Bölüm kuyruğunu güncelle ve kaydet
         if: steps.episode.outputs.done != 'true'
@@ -253,10 +281,12 @@ jobs:
           import os
 
           p = 'automation/queue.json'
+
           with open(p, encoding='utf-8') as f:
               d = json.load(f)
 
           n = int(os.environ['EPISODE'])
+
           if d['next_episode'] != n:
               raise SystemExit('Kuyruk değişti; güvenlik için commit iptal edildi')
 
@@ -269,6 +299,7 @@ jobs:
 
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
           git add automation/queue.json
           git commit -m "KORKU MOTORU: bölüm $EPISODE yayınlandı"
           git push
