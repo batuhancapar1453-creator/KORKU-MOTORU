@@ -1,10 +1,8 @@
-
 name: KORKU MOTORU - Otomatik Shorts
 
 on:
   workflow_dispatch:
   schedule:
-    # Türkiye saati 09:00 ve 12:00
     - cron: '30 4 * * *'
     - cron: '30 7 * * *'
 
@@ -37,18 +35,16 @@ jobs:
           if [ -f "$ROOT/engine/render.mjs" ] && [ -f "$ROOT/automation/prepare_episode.py" ]; then
             echo "Motor doğrudan depoda bulundu."
           else
-            ARCHIVE=$(find "$GITHUB_WORKSPACE" -type f -iname 'KORKU_MOTORU_OTOMATIK_PAKET.zip' -print -quit)
+            ARCHIVE=$(find "$GITHUB_WORKSPACE" -type f -iname 'KORKU_MOTORU_OTOMATIK_PAKET*.zip' -print | sort -V | tail -n 1)
 
             if [ -z "$ARCHIVE" ]; then
-              echo "::error::KORKU_MOTORU_OTOMATIK_PAKET.zip bulunamadı."
-              echo "Depodaki ZIP dosyaları:"
+              echo "::error::KORKU_MOTORU_OTOMATIK_PAKET*.zip bulunamadı."
               find "$GITHUB_WORKSPACE" -type f -iname '*.zip' -print
-              echo "Depo ana dizini:"
               ls -la "$GITHUB_WORKSPACE"
               exit 1
             fi
 
-            echo "ZIP bulundu: $ARCHIVE"
+            echo "Kullanılacak ZIP: $ARCHIVE"
 
             mkdir -p "$GITHUB_WORKSPACE/extracted"
             unzip -oq "$ARCHIVE" -d "$GITHUB_WORKSPACE/extracted"
@@ -57,7 +53,7 @@ jobs:
 
             if [ -z "$ENGINE_FILE" ]; then
               echo "::error::ZIP içinde engine/render.mjs bulunamadı."
-              find "$GITHUB_WORKSPACE/extracted" -maxdepth 4 -type f | head -100
+              find "$GITHUB_WORKSPACE/extracted" -maxdepth 5 -type f | head -100
               exit 1
             fi
 
@@ -88,7 +84,6 @@ jobs:
           set -euo pipefail
 
           mkdir -p "$GITHUB_WORKSPACE/automation"
-
           STATE="$GITHUB_WORKSPACE/automation/queue.json"
 
           if [ ! -f "$STATE" ]; then
@@ -98,7 +93,7 @@ jobs:
           N=$(python -c "import json;print(json.load(open('$STATE'))['next_episode'])")
 
           if [ "$N" -gt 10 ]; then
-            echo "10 bölümlük sezon tamamlandı; yeni sezon eklenmeden yayın yapılmayacak."
+            echo "10 bölümlük sezon tamamlandı."
             echo "done=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -124,7 +119,6 @@ jobs:
 
       - name: FFmpeg kur
         if: steps.episode.outputs.done != 'true'
-        shell: bash
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
@@ -144,25 +138,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           test -x "$REAL_CHROME"
 
           printf '#!/usr/bin/env bash\nexec "%s" --no-sandbox --disable-setuid-sandbox --disable-dev-shm-usage "$@"\n' "$REAL_CHROME" > "$RUNNER_TEMP/chrome-headless"
 
           chmod +x "$RUNNER_TEMP/chrome-headless"
-
           echo "CHROME_PATH=$RUNNER_TEMP/chrome-headless" >> "$GITHUB_ENV"
 
       - name: Node paketleri ve Python bağımlılıkları
         if: steps.episode.outputs.done != 'true'
         env:
           ROOT: ${{ steps.project.outputs.root }}
-        shell: bash
         run: |
           set -euo pipefail
-
           npm ci --no-audit --no-fund --prefix "$ROOT/engine"
-
           python -m pip install --upgrade pip
           python -m pip install numpy edge-tts google-api-python-client google-auth
 
@@ -175,7 +164,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           for key in YOUTUBE_CLIENT_ID YOUTUBE_CLIENT_SECRET YOUTUBE_REFRESH_TOKEN; do
             if [ -z "${!key:-}" ]; then
               echo "::error::GitHub Secret eksik: $key"
@@ -188,19 +176,15 @@ jobs:
         env:
           ROOT: ${{ steps.project.outputs.root }}
           EPISODE: ${{ steps.episode.outputs.episode }}
-        shell: bash
         run: |
-          set -euo pipefail
           python "$ROOT/automation/prepare_episode.py" "$EPISODE"
 
       - name: Render öncesi dosyaları doğrula
         if: steps.episode.outputs.done != 'true'
         env:
           ROOT: ${{ steps.project.outputs.root }}
-        shell: bash
         run: |
           set -euo pipefail
-
           test -f "$ROOT/stories/son-gorulme/story.js"
           test -s "$ROOT/stories/son-gorulme/voice/voice.wav"
           test -s "$ROOT/stories/son-gorulme/voice/words.json"
@@ -214,9 +198,7 @@ jobs:
         if: steps.episode.outputs.done != 'true'
         env:
           ROOT: ${{ steps.project.outputs.root }}
-        shell: bash
-        run: |
-          python "$ROOT/engine/audio/mix.py" "$ROOT/stories/son-gorulme"
+        run: python "$ROOT/engine/audio/mix.py" "$ROOT/stories/son-gorulme"
 
       - name: 1080x1920 videoyu render et
         if: steps.episode.outputs.done != 'true'
@@ -256,9 +238,7 @@ jobs:
           YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
           YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
           YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
-        shell: bash
-        run: |
-          python "$ROOT/automation/upload_youtube.py" "$EPISODE"
+        run: python "$ROOT/automation/upload_youtube.py" "$EPISODE"
 
       - name: Bölüm kuyruğunu güncelle ve kaydet
         if: steps.episode.outputs.done != 'true'
@@ -273,12 +253,10 @@ jobs:
           import os
 
           p = 'automation/queue.json'
-
           with open(p, encoding='utf-8') as f:
               d = json.load(f)
 
           n = int(os.environ['EPISODE'])
-
           if d['next_episode'] != n:
               raise SystemExit('Kuyruk değişti; güvenlik için commit iptal edildi')
 
@@ -291,11 +269,8 @@ jobs:
 
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-
           git add automation/queue.json
-
           git commit -m "KORKU MOTORU: bölüm $EPISODE yayınlandı"
-
           git push
 
       - name: Render çıktısını sakla
