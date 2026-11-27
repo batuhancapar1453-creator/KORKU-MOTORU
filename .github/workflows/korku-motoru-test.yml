@@ -1,0 +1,69 @@
+
+name: KORKU MOTORU - İlk Görsel Testi
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  render-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Depoyu indir
+        uses: actions/checkout@v4
+
+      - name: ZIP dosyasını aç
+        run: |
+          ZIP_FILE=$(find . -maxdepth 1 -type f -iname "*.zip" | head -n 1)
+          if [ -z "$ZIP_FILE" ]; then
+            echo "HATA: Ana dizinde ZIP dosyası bulunamadı."
+            exit 1
+          fi
+          echo "Açılan dosya: $ZIP_FILE"
+          unzip -q "$ZIP_FILE" -d extracted
+          find extracted -maxdepth 3 -name package.json
+
+      - name: Node.js kur
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Chrome kur
+        uses: browser-actions/setup-chrome@v1
+        id: chrome
+
+      - name: Chrome yolunu ayarla
+        run: |
+          sudo ln -sf "${{ steps.chrome.outputs.chrome-path }}" /usr/bin/chromium
+
+      - name: FFmpeg kur
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Motor bağımlılıklarını yükle
+        working-directory: extracted/KORKU_MOTORU/engine
+        run: npm install
+
+      - name: İlk sahne testini oluştur
+        working-directory: extracted/KORKU_MOTORU/engine
+        env:
+          CHROME_PATH: /usr/bin/chromium
+        run: |
+          node render.mjs gece-vardiyasi --stills=1,5,10,16,23,30,37 --scale=0.5
+
+      - name: Test görsellerini kaydet
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: korku-motoru-test-sonuclari
+          path: |
+            extracted/KORKU_MOTORU/**/*.png
+            extracted/KORKU_MOTORU/**/*.jpg
+            extracted/KORKU_MOTORU/**/*.log
+          if-no-files-found: warn
+          retention-days: 7
