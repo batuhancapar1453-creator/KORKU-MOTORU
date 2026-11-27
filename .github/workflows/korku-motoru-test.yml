@@ -1,4 +1,4 @@
-name: KORKU MOTORU - WebGL Duzeltme ve Sahne Testi
+name: KORKU MOTORU - Sahne Testi
 
 on:
   workflow_dispatch:
@@ -54,6 +54,13 @@ jobs:
         uses: browser-actions/setup-chrome@v1
         id: chrome
 
+      - name: FFmpeg ve sanal ekran kur
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg xvfb
+
       - name: Chrome WebGL baslatma ayari
         shell: bash
         env:
@@ -68,25 +75,20 @@ jobs:
 
           sudo tee /usr/local/bin/chrome-webgl > /dev/null <<EOF
           #!/bin/sh
-          exec "$CHROME_BIN" \
-            --no-sandbox \
-            --disable-setuid-sandbox \
-            --disable-dev-shm-usage \
-            --use-gl=angle \
-            --use-angle=swiftshader \
-            --enable-webgl \
-            --enable-unsafe-swiftshader \
-            --ignore-gpu-blocklist \
+          exec "$CHROME_BIN" \\
+            --no-sandbox \\
+            --disable-setuid-sandbox \\
+            --disable-dev-shm-usage \\
+            --use-gl=angle \\
+            --use-angle=swiftshader \\
+            --enable-webgl \\
+            --enable-unsafe-swiftshader \\
+            --ignore-gpu-blocklist \\
             "$@"
           EOF
 
           sudo chmod +x /usr/local/bin/chrome-webgl
           /usr/local/bin/chrome-webgl --version
-
-      - name: FFmpeg kur
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
 
       - name: Motor bagimliliklarini yukle
         working-directory: extracted/KORKU_MOTORU/engine
@@ -98,14 +100,16 @@ jobs:
           CHROME_PATH: /usr/local/bin/chrome-webgl
         shell: bash
         run: |
-          set -o pipefail
-          node render.mjs gece-vardiyasi --stills=1,5,10,16,23,30,37 --scale=0.5 2>&1 | tee render-test.log
+          set -euo pipefail
+          xvfb-run -a --server-args="-screen 0 1920x1080x24" \\
+            node render.mjs gece-vardiyasi --stills=1,5,10,16,23,30,37 --scale=0.5 \\
+            2>&1 | tee render-test.log
 
       - name: Test dosyalarini ve hata kayitlarini kaydet
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: korku-motoru-webgl-test-sonuclari
+          name: korku-motoru-sahne-test-sonuclari
           path: |
             extracted/KORKU_MOTORU/stories/gece-vardiyasi/out/**
             extracted/KORKU_MOTORU/engine/render-test.log
