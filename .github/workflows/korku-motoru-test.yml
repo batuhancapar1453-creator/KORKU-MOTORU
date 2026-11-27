@@ -1,4 +1,4 @@
-name: KORKU MOTORU - Sahne Testi
+name: KORKU MOTORU - Orijinal Motor Render Testi
 
 on:
   workflow_dispatch:
@@ -29,17 +29,15 @@ jobs:
           echo "Acilan dosya: $ZIP_FILE"
           unzip -q "$ZIP_FILE" -d extracted
 
-          if [ ! -f "extracted/KORKU_MOTORU/engine/package.json" ]; then
-            echo "HATA: extracted/KORKU_MOTORU/engine/package.json bulunamadi."
-            find extracted -maxdepth 5 -type f -name package.json -print
-            exit 1
-          fi
+          ENGINE="extracted/KORKU_MOTORU/engine"
+          STORY="extracted/KORKU_MOTORU/stories/gece-vardiyasi"
 
-          if [ ! -f "extracted/KORKU_MOTORU/stories/gece-vardiyasi/story.js" ]; then
-            echo "HATA: gece-vardiyasi hikaye dosyasi bulunamadi."
-            find extracted/KORKU_MOTORU/stories -maxdepth 3 -type f -print || true
-            exit 1
-          fi
+          test -f "$ENGINE/package.json" || { echo "Motor package.json bulunamadi"; find extracted -name package.json -print; exit 1; }
+          test -f "$ENGINE/render.mjs" || { echo "render.mjs bulunamadi"; exit 1; }
+          test -f "$STORY/story.js" || { echo "gece-vardiyasi/story.js bulunamadi"; find extracted/KORKU_MOTORU/stories -maxdepth 3 -type f -print; exit 1; }
+
+          echo "Motor ve hikaye dosyalari bulundu."
+          echo "Chrome baslatma kodu orijinal Puppeteer akisinda birakilacak."
 
       - name: Node.js kur
         uses: actions/setup-node@v4
@@ -52,15 +50,7 @@ jobs:
         uses: browser-actions/setup-chrome@v1
         id: chrome
 
-      - name: FFmpeg ve sanal ekran kur
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg xvfb
-          command -v xvfb-run
-
-      - name: Chrome WebGL baslatma ayari
+      - name: Linux Chrome uyumluluk sarmalayicisi
         shell: bash
         env:
           CHROME_BIN: ${{ steps.chrome.outputs.chrome-path }}
@@ -68,36 +58,43 @@ jobs:
           set -euo pipefail
 
           if [ -z "$CHROME_BIN" ] || [ ! -x "$CHROME_BIN" ]; then
-            echo "HATA: Chrome bulunamadi. Yol: ${CHROME_BIN:-bos}"
+            echo "HATA: Chrome bulunamadi: ${CHROME_BIN:-bos}"
             exit 1
           fi
 
-          sudo tee /usr/local/bin/chrome-webgl > /dev/null <<EOF
+          sudo tee /usr/local/bin/chrome-github > /dev/null <<EOF
           #!/bin/sh
-          exec "$CHROME_BIN" --no-sandbox --disable-setuid-sandbox --disable-dev-shm-usage --use-gl=angle --use-angle=swiftshader --enable-webgl --enable-unsafe-swiftshader --ignore-gpu-blocklist "$@"
+          exec "$CHROME_BIN" --no-sandbox --disable-setuid-sandbox --disable-dev-shm-usage "$@"
           EOF
 
-          sudo chmod +x /usr/local/bin/chrome-webgl
-          test -x /usr/local/bin/chrome-webgl
+          sudo chmod +x /usr/local/bin/chrome-github
+          echo "Chrome sarmalayicisi hazir."
+
+      - name: FFmpeg kur
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
 
       - name: Motor bagimliliklarini yukle
         working-directory: extracted/KORKU_MOTORU/engine
         run: npm install --no-audit --no-fund
 
-      - name: Ilk sahne testini olustur
+      - name: Orijinal Puppeteer render akisini calistir
         working-directory: extracted/KORKU_MOTORU/engine
         env:
-          CHROME_PATH: /usr/local/bin/chrome-webgl
+          CHROME_PATH: /usr/local/bin/chrome-github
         shell: bash
         run: |
           set -euo pipefail
-          xvfb-run -a --server-args="-screen 0 1920x1080x24" node render.mjs gece-vardiyasi --stills=1,5,10,16,23,30,37 --scale=0.5 2>&1 | tee render-test.log
+          node render.mjs gece-vardiyasi --stills=1,5,10,16,23,30,37 --scale=0.5 2>&1 | tee render-test.log
 
-      - name: Test dosyalarini ve hata kayitlarini kaydet
+      - name: Test ciktisini ve loglari kaydet
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: korku-motoru-sahne-test-sonuclari
+          name: korku-motoru-orijinal-render-testi
           path: |
             extracted/KORKU_MOTORU/stories/gece-vardiyasi/out/**
             extracted/KORKU_MOTORU/engine/render-test.log
