@@ -155,8 +155,28 @@ jobs:
         working-directory: ${{ steps.project.outputs.root }}/engine
         run: npm ci --no-audit --no-fund
 
-      - name: Ses miksleme bağımlılığını kur
-        run: python -m pip install --upgrade pip numpy
+      - name: Ses ve hikâye üretim bağımlılıklarını kur
+        run: python -m pip install --upgrade pip numpy edge-tts
+
+      - name: Sıradaki yeni bölümü hazırla
+        shell: bash
+        env:
+          PROJECT_ROOT: ${{ steps.project.outputs.root }}
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_ROOT"
+          QUEUE="$PROJECT_ROOT/automation/queue.json"
+          EPISODES="$PROJECT_ROOT/automation/episodes.json"
+          test -f "$QUEUE"
+          test -f "$EPISODES"
+          EPISODE="$(python -c 'import json; q=json.load(open("automation/queue.json",encoding="utf-8")); print(q.get("next_episode",1))')"
+          TOTAL="$(python -c 'import json; print(len(json.load(open("automation/episodes.json",encoding="utf-8"))))')"
+          if [ "$EPISODE" -lt 1 ] || [ "$EPISODE" -gt "$TOTAL" ]; then
+            echo "::error::Hazirlanacak yeni bolum kalmadi. next_episode=$EPISODE / toplam=$TOTAL"
+            exit 1
+          fi
+          echo "Hazirlanan bolum: $EPISODE / $TOTAL"
+          python automation/prepare_episode.py "$EPISODE"
 
       - name: Hikâye ve motor dosyalarını doğrula
         shell: bash
