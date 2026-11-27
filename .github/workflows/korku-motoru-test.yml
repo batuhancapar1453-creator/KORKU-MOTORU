@@ -1,174 +1,178 @@
-name: Yumurta-Stili / KORKU MOTORU - Render
-
+name: KORKU MOTORU - Otomatik Shorts
 on:
   workflow_dispatch:
-    inputs:
-      story:
-        description: "Hikâye klasörü (KORKU için gece-vardiyasi, örnek için is-odasi)"
-        required: false
-        default: "is-odasi"
-        type: string
-
+  schedule:
+    # Türkiye saati 09:00 ve 12:00 için render başlangıcı (UTC+3); render bitince yükler.
+    - cron: '30 4 * * *'
+    - cron: '30 7 * * *'
 permissions:
-  contents: read
-
+  contents: write
 concurrency:
-  group: yumurta-stili-render
+  group: korku-motoru-otomatik-yayin
   cancel-in-progress: false
-
 jobs:
-  render:
+  publish:
     runs-on: ubuntu-latest
     timeout-minutes: 180
-
     steps:
       - name: Depoyu indir
         uses: actions/checkout@v4
-
-      - name: Proje klasörünü ve hikâyeyi bul
+        with:
+          fetch-depth: 0
+      - name: Proje ve motoru bul
         id: project
         shell: bash
-        env:
-          REQUESTED_STORY: ${{ inputs.story }}
         run: |
           set -euo pipefail
-
-          ROOT=""
-          for archive in "$GITHUB_WORKSPACE"/*.zip; do
-            [ -f "$archive" ] || continue
-            if unzip -Z1 "$archive" | grep -Eq '(^|/)engine/render\.mjs$'; then
-              mkdir -p "$GITHUB_WORKSPACE/extracted"
-              unzip -oq "$archive" -d "$GITHUB_WORKSPACE/extracted"
-              break
-            fi
-          done
-
-          for candidate in \
-            "$GITHUB_WORKSPACE/extracted/KORKU_MOTORU" \
-            "$GITHUB_WORKSPACE/extracted/yumurta-stili-main" \
-            "$GITHUB_WORKSPACE/KORKU_MOTORU" \
-            "$GITHUB_WORKSPACE/yumurta-stili-main" \
-            "$GITHUB_WORKSPACE"
-          do
-            if [ -f "$candidate/engine/render.mjs" ]; then
-              ROOT="$candidate"
-              break
-            fi
-          done
-
-          if [ -z "$ROOT" ]; then
-            echo "::error::engine/render.mjs bulunamadı. ZIP içeriğini depo köküne veya KORKU_MOTORU klasörüne koyun."
-            exit 1
+          ROOT=''
+          if [ -f "$GITHUB_WORKSPACE/engine/render.mjs" ] && [ -f "$GITHUB_WORKSPACE/automation/prepare_episode.py" ]; then
+            ROOT="$GITHUB_WORKSPACE"
+          else
+            ARCHIVE="$GITHUB_WORKSPACE/KORKU_MOTORU_OTOMATIK_PAKET.zip"
+            test -f "$ARCHIVE" || { echo 'KORKU_MOTORU_OTOMATIK_PAKET.zip depoda bulunamadı'; exit 1; }
+            mkdir -p "$GITHUB_WORKSPACE/extracted"
+            unzip -oq "$ARCHIVE" -d "$GITHUB_WORKSPACE/extracted"
+            if [ -f "$GITHUB_WORKSPACE/extracted/engine/render.mjs" ]; then ROOT="$GITHUB_WORKSPACE/extracted"; fi
           fi
-
-          STORY="${REQUESTED_STORY:-is-odasi}"
-          if [ ! -f "$ROOT/stories/$STORY/story.js" ]; then
-            if [ -f "$ROOT/stories/gece-vardiyasi/story.js" ]; then
-              STORY="gece-vardiyasi"
-            elif [ -f "$ROOT/stories/is-odasi/story.js" ]; then
-              STORY="is-odasi"
-            else
-              echo "::error::Geçerli hikâye bulunamadı: $ROOT/stories/$STORY/story.js"
-              find "$ROOT/stories" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' || true
-              exit 1
-            fi
-          fi
-
+          test -n "$ROOT" || { echo 'Yumurta-Stili engine/render.mjs bulunamadı'; exit 1; }
           echo "root=$ROOT" >> "$GITHUB_OUTPUT"
-          echo "story=$STORY" >> "$GITHUB_OUTPUT"
-          echo "Proje: $ROOT"
-          echo "Hikâye: $STORY"
-
-      - name: Node.js kur
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
-      - name: Python kur
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: FFmpeg ve temel paketleri kur
+      - name: Kalıcı yayın kuyruğunu hazırla
+        id: episode
+        env:
+          ROOT: ${{ steps.project.outputs.root }}
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/automation"
+          STATE="$GITHUB_WORKSPACE/automation/queue.json"
+          if [ ! -f "$STATE" ]; then cp "$ROOT/automation/queue.json" "$STATE"; fi
+          N=$(python -c "import json;print(json.load(open('$STATE'))['next_episode'])")
+          if [ "$N" -gt 10 ]; then echo '10 bölümlük sezon tamamlandı; yeni sezon eklenmeden yayın yapılmayacak.'; echo 'done=true' >> "$GITHUB_OUTPUT"; exit 0; fi
+          echo "episode=$N" >> "$GITHUB_OUTPUT"
+          echo 'done=false' >> "$GITHUB_OUTPUT"
+      - name: Tamamlanan sezonu durdur
+        if: steps.episode.outputs.done == 'true'
+        run: echo 'Yayın kuyruğu güvenli biçimde durduruldu.'
+      - name: Node.js ve Python kur
+        if: steps.episode.outputs.done != 'true'
+        uses: actions/setup-node@v4
+        with: {node-version: '20'}
+      - name: Python ortamı
+        if: steps.episode.outputs.done != 'true'
+        uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - name: FFmpeg ve Chrome kur
+        if: steps.episode.outputs.done != 'true'
+        shell: bash
+        run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
-
       - name: Chrome kur
+        if: steps.episode.outputs.done != 'true'
         id: chrome
         uses: browser-actions/setup-chrome@v1
         with:
           chrome-version: stable
           install-dependencies: true
-
-      - name: Chrome için headless başlatma sarmalayıcısı
-        shell: bash
-        env:
-          REAL_CHROME: ${{ steps.chrome.outputs.chrome-path }}
+      - name: Chrome başlatma sarmalayıcısı
+        if: steps.episode.outputs.done != 'true'
+        env: {REAL_CHROME: '${{ steps.chrome.outputs.chrome-path }}'}
         run: |
           set -euo pipefail
           test -x "$REAL_CHROME"
-          WRAPPER="$RUNNER_TEMP/chrome-headless"
-          printf '#!/usr/bin/env bash\nexec "%s" --no-sandbox --disable-setuid-sandbox --disable-dev-shm-usage "$@"\n' "$REAL_CHROME" > "$WRAPPER"
-          chmod +x "$WRAPPER"
-          echo "CHROME_PATH=$WRAPPER" >> "$GITHUB_ENV"
-          "$WRAPPER" --version
-
-      - name: Node paketlerini kur
-        working-directory: ${{ steps.project.outputs.root }}/engine
-        run: npm ci --no-audit --no-fund
-
-      - name: Ses miksleme bağımlılığını kur
-        run: python -m pip install --upgrade pip numpy
-
-      - name: Hikâye ve motor dosyalarını doğrula
-        shell: bash
-        env:
-          PROJECT_ROOT: ${{ steps.project.outputs.root }}
-          STORY: ${{ steps.project.outputs.story }}
+          printf '#!/usr/bin/env bash\nexec "%s" --no-sandbox --disable-setuid-sandbox --disable-dev-shm-usage "$@"\n' "$REAL_CHROME" > "$RUNNER_TEMP/chrome-headless"
+          chmod +x "$RUNNER_TEMP/chrome-headless"
+          echo "CHROME_PATH=$RUNNER_TEMP/chrome-headless" >> "$GITHUB_ENV"
+      - name: Node paketleri ve Python bağımlılıkları
+        if: steps.episode.outputs.done != 'true'
+        env: {ROOT: '${{ steps.project.outputs.root }}'}
         run: |
-          set -euo pipefail
-          test -f "$PROJECT_ROOT/engine/render.mjs"
-          test -f "$PROJECT_ROOT/engine/index.html"
-          test -f "$PROJECT_ROOT/stories/$STORY/story.js"
-          test -f "$PROJECT_ROOT/stories/$STORY/voice/voice.wav" || echo "UYARI: voice.wav yok; video sessiz üretilecek."
-          echo "Motor ve hikâye dosyaları bulundu."
-
-      - name: Ses zamanlamalarını çıkar
-        working-directory: ${{ steps.project.outputs.root }}/engine
+          npm ci --no-audit --no-fund --prefix "$ROOT/engine"
+          python -m pip install --upgrade pip numpy edge-tts google-api-python-client google-auth
+      - name: YouTube bağlantısını render öncesi doğrula
+        if: steps.episode.outputs.done != 'true'
         env:
-          STORY: ${{ steps.project.outputs.story }}
-        run: node render.mjs "$STORY" --cues
-
-      - name: Müzik ve efektleri sesle birleştir
-        working-directory: ${{ steps.project.outputs.root }}/engine
-        env:
-          PROJECT_ROOT: ${{ steps.project.outputs.root }}
-          STORY: ${{ steps.project.outputs.story }}
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
-          STORY_DIR="$PROJECT_ROOT/stories/$STORY"
-          if [ -f "$STORY_DIR/voice/voice.wav" ] && [ -f "$STORY_DIR/audio/cues.json" ]; then
-            python audio/mix.py "$STORY_DIR"
+          for key in YOUTUBE_CLIENT_ID YOUTUBE_CLIENT_SECRET YOUTUBE_REFRESH_TOKEN; do
+            if [ -z "${!key:-}" ]; then echo "::error::GitHub Secret eksik: $key. Önce Settings > Secrets and variables > Actions bölümüne ekleyin."; exit 1; fi
+          done
+      - name: Bölüm sesini ve zamanlamalarını üret
+        if: steps.episode.outputs.done != 'true'
+        env: {ROOT: '${{ steps.project.outputs.root }}', EPISODE: '${{ steps.episode.outputs.episode }}'}
+        run: python "$ROOT/automation/prepare_episode.py" "$EPISODE"
+      - name: Render öncesi dosyaları doğrula
+        if: steps.episode.outputs.done != 'true'
+        env: {ROOT: '${{ steps.project.outputs.root }}'}
+        run: |
+          test -f "$ROOT/stories/son-gorulme/story.js"
+          test -s "$ROOT/stories/son-gorulme/voice/voice.wav"
+          test -s "$ROOT/stories/son-gorulme/voice/words.json"
+      - name: Ses efektleri ve sahne ipuçlarını çıkar
+        if: steps.episode.outputs.done != 'true'
+        working-directory: ${{ steps.project.outputs.root }}/engine
+        run: node render.mjs son-gorulme --cues
+      - name: Özgün müzik ve ses efektlerini üret
+        if: steps.episode.outputs.done != 'true'
+        env: {ROOT: '${{ steps.project.outputs.root }}'}
+        run: python "$ROOT/engine/audio/mix.py" "$ROOT/stories/son-gorulme"
+      - name: 1080x1920 videoyu render et
+        if: steps.episode.outputs.done != 'true'
+        working-directory: ${{ steps.project.outputs.root }}/engine
+        run: node render.mjs son-gorulme
+      - name: Hedef yayın saatini bekle (yalnızca erken render durumunda)
+        if: steps.episode.outputs.done != 'true' && github.event_name == 'schedule'
+        env:
+          SCHEDULE: ${{ github.event.schedule }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$SCHEDULE" = '30 4 * * *' ]; then TARGET_HOUR=06; else TARGET_HOUR=09; fi
+          TARGET=$(date -u -d "$(date -u +%F) ${TARGET_HOUR}:00:00" +%s)
+          NOW=$(date -u +%s)
+          if [ "$NOW" -lt "$TARGET" ]; then
+            WAIT=$((TARGET-NOW))
+            echo "Hedef yayın saatine kadar ${WAIT} saniye beklenecek."
+            sleep "$WAIT"
           else
-            echo "Ses dosyası veya cues.json yok; miksleme atlandı."
+            echo 'Render hedef saati geçti; video hazır olduğu için hemen yüklenecek.'
           fi
-
-      - name: Videoyu render et
-        working-directory: ${{ steps.project.outputs.root }}/engine
+      - name: YouTube'a herkese açık yükle
+        if: steps.episode.outputs.done != 'true'
         env:
-          STORY: ${{ steps.project.outputs.story }}
-        run: node render.mjs "$STORY"
-
-      - name: Oluşan videoyu ve render kayıtlarını yükle
-        if: always()
+          ROOT: '${{ steps.project.outputs.root }}'
+          EPISODE: '${{ steps.episode.outputs.episode }}'
+          YOUTUBE_CLIENT_ID: '${{ secrets.YOUTUBE_CLIENT_ID }}'
+          YOUTUBE_CLIENT_SECRET: '${{ secrets.YOUTUBE_CLIENT_SECRET }}'
+          YOUTUBE_REFRESH_TOKEN: '${{ secrets.YOUTUBE_REFRESH_TOKEN }}'
+        run: python "$ROOT/automation/upload_youtube.py" "$EPISODE"
+      - name: Bölüm kuyruğunu güncelle ve kaydet
+        if: steps.episode.outputs.done != 'true'
+        env: {EPISODE: '${{ steps.episode.outputs.episode }}'}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,os
+          p='automation/queue.json'; d=json.load(open(p)); n=int(os.environ['EPISODE'])
+          if d['next_episode'] != n: raise SystemExit('Kuyruk değişti; güvenlik için commit iptal edildi')
+          d['completed'].append(n); d['next_episode']=n+1
+          json.dump(d,open(p,'w'),ensure_ascii=False,indent=2)
+          PY
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add automation/queue.json
+          git commit -m "KORKU MOTORU: bölüm $EPISODE yayınlandı"
+          git push
+      - name: Render çıktısını sakla
+        if: always() && steps.episode.outputs.done != 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: render-${{ steps.project.outputs.story }}
-          path: |
-            ${{ steps.project.outputs.root }}/stories/${{ steps.project.outputs.story }}/out/
+          name: korku-motoru-bolum-${{ steps.episode.outputs.episode }}
+          path: ${{ steps.project.outputs.root }}/stories/son-gorulme/out/
           if-no-files-found: warn
           retention-days: 7
