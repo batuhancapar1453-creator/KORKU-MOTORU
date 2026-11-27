@@ -19,13 +19,20 @@ jobs:
       - name: ZIP dosyasını aç
         run: |
           ZIP_FILE=$(find . -maxdepth 1 -type f -iname "*.zip" | head -n 1)
+
           if [ -z "$ZIP_FILE" ]; then
             echo "HATA: Ana dizinde ZIP dosyası bulunamadı."
             exit 1
           fi
+
           echo "Açılan dosya: $ZIP_FILE"
           unzip -q "$ZIP_FILE" -d extracted
-          find extracted -maxdepth 3 -name package.json
+
+          if [ ! -f "extracted/KORKU_MOTORU/engine/package.json" ]; then
+            echo "HATA: Motor klasörü veya package.json bulunamadı."
+            find extracted -maxdepth 4 -type f -name package.json
+            exit 1
+          fi
 
       - name: Node.js kur
         uses: actions/setup-node@v4
@@ -36,9 +43,23 @@ jobs:
         uses: browser-actions/setup-chrome@v1
         id: chrome
 
-      - name: Chrome yolunu ayarla
+      - name: Chrome güvenli başlatma ayarı
         run: |
-          sudo ln -sf "${{ steps.chrome.outputs.chrome-path }}" /usr/bin/chromium
+          CHROME_BIN="${{ steps.chrome.outputs.chrome-path }}"
+
+          if [ ! -x "$CHROME_BIN" ]; then
+            echo "HATA: Chrome bulunamadı: $CHROME_BIN"
+            exit 1
+          fi
+
+          sudo tee /usr/local/bin/chrome-nonsandbox > /dev/null <<EOF
+          #!/bin/sh
+          exec "$CHROME_BIN" --no-sandbox --disable-setuid-sandbox --disable-dev-shm-usage --disable-gpu "\$@"
+          EOF
+
+          sudo chmod +x /usr/local/bin/chrome-nonsandbox
+
+          /usr/local/bin/chrome-nonsandbox --version
 
       - name: FFmpeg kur
         run: |
@@ -52,11 +73,11 @@ jobs:
       - name: İlk sahne testini oluştur
         working-directory: extracted/KORKU_MOTORU/engine
         env:
-          CHROME_PATH: /usr/bin/chromium
+          CHROME_PATH: /usr/local/bin/chrome-nonsandbox
         run: |
           node render.mjs gece-vardiyasi --stills=1,5,10,16,23,30,37 --scale=0.5
 
-      - name: Test görsellerini kaydet
+      - name: Test dosyalarını kaydet
         if: always()
         uses: actions/upload-artifact@v4
         with:
