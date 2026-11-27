@@ -21,7 +21,6 @@ jobs:
           set -euo pipefail
 
           ZIP_FILE=$(find . -maxdepth 1 -type f -iname "*.zip" | head -n 1)
-
           if [ -z "$ZIP_FILE" ]; then
             echo "HATA: Ana dizinde ZIP dosyasi bulunamadi."
             exit 1
@@ -32,7 +31,6 @@ jobs:
 
           if [ ! -f "extracted/KORKU_MOTORU/engine/package.json" ]; then
             echo "HATA: extracted/KORKU_MOTORU/engine/package.json bulunamadi."
-            echo "Bulunan package.json dosyalari:"
             find extracted -maxdepth 5 -type f -name package.json -print
             exit 1
           fi
@@ -60,6 +58,7 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y ffmpeg xvfb
+          command -v xvfb-run
 
       - name: Chrome WebGL baslatma ayari
         shell: bash
@@ -75,20 +74,11 @@ jobs:
 
           sudo tee /usr/local/bin/chrome-webgl > /dev/null <<EOF
           #!/bin/sh
-          exec "$CHROME_BIN" \\
-            --no-sandbox \\
-            --disable-setuid-sandbox \\
-            --disable-dev-shm-usage \\
-            --use-gl=angle \\
-            --use-angle=swiftshader \\
-            --enable-webgl \\
-            --enable-unsafe-swiftshader \\
-            --ignore-gpu-blocklist \\
-            "$@"
+          exec "$CHROME_BIN" --no-sandbox --disable-setuid-sandbox --disable-dev-shm-usage --use-gl=angle --use-angle=swiftshader --enable-webgl --enable-unsafe-swiftshader --ignore-gpu-blocklist "$@"
           EOF
 
           sudo chmod +x /usr/local/bin/chrome-webgl
-          echo "Chrome yolu dogrulandi: /usr/local/bin/chrome-webgl"
+          test -x /usr/local/bin/chrome-webgl
 
       - name: Motor bagimliliklarini yukle
         working-directory: extracted/KORKU_MOTORU/engine
@@ -101,9 +91,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          xvfb-run -a --server-args="-screen 0 1920x1080x24" \\
-            node render.mjs gece-vardiyasi --stills=1,5,10,16,23,30,37 --scale=0.5 \\
-            2>&1 | tee render-test.log
+          xvfb-run -a --server-args="-screen 0 1920x1080x24" node render.mjs gece-vardiyasi --stills=1,5,10,16,23,30,37 --scale=0.5 2>&1 | tee render-test.log
 
       - name: Test dosyalarini ve hata kayitlarini kaydet
         if: always()
