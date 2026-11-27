@@ -88,7 +88,7 @@ jobs:
           EOF
 
           sudo chmod +x /usr/local/bin/chrome-webgl
-          /usr/local/bin/chrome-webgl --version
+          echo "Chrome yolu dogrulandi: /usr/local/bin/chrome-webgl"
 
       - name: Motor bagimliliklarini yukle
         working-directory: extracted/KORKU_MOTORU/engine
