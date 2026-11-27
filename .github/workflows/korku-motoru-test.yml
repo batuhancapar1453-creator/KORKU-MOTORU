@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       story:
-        description: "Hikâye klasörü (KORKU için gece-vardiyasi, örnek için is-odasi)"
+        description: "Hikâye klasörü (varsayılan: son-gorulme)"
         required: false
-        default: "is-odasi"
+        default: "son-gorulme"
         type: string
 
 permissions:
@@ -91,12 +91,12 @@ jobs:
             exit 1
           fi
 
-          STORY="${REQUESTED_STORY:-is-odasi}"
+          STORY="${REQUESTED_STORY:-son-gorulme}"
           if [ ! -f "$ROOT/stories/$STORY/story.js" ]; then
             if [ -f "$ROOT/stories/gece-vardiyasi/story.js" ]; then
               STORY="gece-vardiyasi"
-            elif [ -f "$ROOT/stories/is-odasi/story.js" ]; then
-              STORY="is-odasi"
+            elif [ -f "$ROOT/stories/son-gorulme/story.js" ]; then
+              STORY="son-gorulme"
             else
               echo "::error::Gecerli hikaye bulunamadi: $ROOT/stories/$STORY/story.js"
               find "$ROOT/stories" -mindepth 1 -maxdepth 2 -type f -name story.js -printf '%h\n' || true
