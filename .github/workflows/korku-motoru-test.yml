@@ -1,5 +1,4 @@
-
-name: KORKU MOTORU - İlk Görsel Testi
+name: KORKU MOTORU - WebGL Duzeltme ve Sahne Testi
 
 on:
   workflow_dispatch:
@@ -16,21 +15,31 @@ jobs:
       - name: Depoyu indir
         uses: actions/checkout@v4
 
-      - name: ZIP dosyasını aç
+      - name: ZIP dosyasini ac ve kontrol et
+        shell: bash
         run: |
+          set -euo pipefail
+
           ZIP_FILE=$(find . -maxdepth 1 -type f -iname "*.zip" | head -n 1)
 
           if [ -z "$ZIP_FILE" ]; then
-            echo "HATA: Ana dizinde ZIP dosyası bulunamadı."
+            echo "HATA: Ana dizinde ZIP dosyasi bulunamadi."
             exit 1
           fi
 
-          echo "Açılan dosya: $ZIP_FILE"
+          echo "Acilan dosya: $ZIP_FILE"
           unzip -q "$ZIP_FILE" -d extracted
 
           if [ ! -f "extracted/KORKU_MOTORU/engine/package.json" ]; then
-            echo "HATA: Motor klasörü veya package.json bulunamadı."
-            find extracted -maxdepth 4 -type f -name package.json
+            echo "HATA: extracted/KORKU_MOTORU/engine/package.json bulunamadi."
+            echo "Bulunan package.json dosyalari:"
+            find extracted -maxdepth 5 -type f -name package.json -print
+            exit 1
+          fi
+
+          if [ ! -f "extracted/KORKU_MOTORU/stories/gece-vardiyasi/story.js" ]; then
+            echo "HATA: gece-vardiyasi hikaye dosyasi bulunamadi."
+            find extracted/KORKU_MOTORU/stories -maxdepth 3 -type f -print || true
             exit 1
           fi
 
@@ -38,53 +47,67 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
+          cache-dependency-path: extracted/KORKU_MOTORU/engine/package.json
 
       - name: Chrome kur
         uses: browser-actions/setup-chrome@v1
         id: chrome
 
-      - name: Chrome güvenli başlatma ayarı
+      - name: Chrome WebGL baslatma ayari
+        shell: bash
+        env:
+          CHROME_BIN: ${{ steps.chrome.outputs.chrome-path }}
         run: |
-          CHROME_BIN="${{ steps.chrome.outputs.chrome-path }}"
+          set -euo pipefail
 
-          if [ ! -x "$CHROME_BIN" ]; then
-            echo "HATA: Chrome bulunamadı: $CHROME_BIN"
+          if [ -z "$CHROME_BIN" ] || [ ! -x "$CHROME_BIN" ]; then
+            echo "HATA: Chrome bulunamadi. Yol: ${CHROME_BIN:-bos}"
             exit 1
           fi
 
-          sudo tee /usr/local/bin/chrome-nonsandbox > /dev/null <<EOF
+          sudo tee /usr/local/bin/chrome-webgl > /dev/null <<EOF
           #!/bin/sh
-          exec "$CHROME_BIN" --no-sandbox --disable-setuid-sandbox --disable-dev-shm-usage --disable-gpu "\$@"
+          exec "$CHROME_BIN" \
+            --no-sandbox \
+            --disable-setuid-sandbox \
+            --disable-dev-shm-usage \
+            --use-gl=angle \
+            --use-angle=swiftshader \
+            --enable-webgl \
+            --enable-unsafe-swiftshader \
+            --ignore-gpu-blocklist \
+            "$@"
           EOF
 
-          sudo chmod +x /usr/local/bin/chrome-nonsandbox
-
-          /usr/local/bin/chrome-nonsandbox --version
+          sudo chmod +x /usr/local/bin/chrome-webgl
+          /usr/local/bin/chrome-webgl --version
 
       - name: FFmpeg kur
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
 
-      - name: Motor bağımlılıklarını yükle
+      - name: Motor bagimliliklarini yukle
         working-directory: extracted/KORKU_MOTORU/engine
-        run: npm install
+        run: npm install --no-audit --no-fund
 
-      - name: İlk sahne testini oluştur
+      - name: Ilk sahne testini olustur
         working-directory: extracted/KORKU_MOTORU/engine
         env:
-          CHROME_PATH: /usr/local/bin/chrome-nonsandbox
+          CHROME_PATH: /usr/local/bin/chrome-webgl
+        shell: bash
         run: |
-          node render.mjs gece-vardiyasi --stills=1,5,10,16,23,30,37 --scale=0.5
+          set -o pipefail
+          node render.mjs gece-vardiyasi --stills=1,5,10,16,23,30,37 --scale=0.5 2>&1 | tee render-test.log
 
-      - name: Test dosyalarını kaydet
+      - name: Test dosyalarini ve hata kayitlarini kaydet
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: korku-motoru-test-sonuclari
+          name: korku-motoru-webgl-test-sonuclari
           path: |
-            extracted/KORKU_MOTORU/**/*.png
-            extracted/KORKU_MOTORU/**/*.jpg
-            extracted/KORKU_MOTORU/**/*.log
+            extracted/KORKU_MOTORU/stories/gece-vardiyasi/out/**
+            extracted/KORKU_MOTORU/engine/render-test.log
           if-no-files-found: warn
           retention-days: 7
