@@ -1,109 +1,131 @@
-name: Yumurta-Stili / KORKU MOTORU - Render
+name: KORKU MOTORU - Otomatik Render ve YouTube Yükleme
 
 on:
   workflow_dispatch:
     inputs:
       story:
-        description: "Hikâye klasörü (varsayılan: son-gorulme)"
+        description: "Hikâye klasörü"
         required: false
         default: "son-gorulme"
         type: string
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: yumurta-stili-render
+  group: korku-motoru-youtube-publisher
   cancel-in-progress: false
 
 jobs:
-  render:
+  render-upload:
     runs-on: ubuntu-latest
     timeout-minutes: 180
 
     steps:
       - name: Depoyu indir
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Saglam ZIP dosyasini bul, ac ve hikayeyi belirle
+      - name: YouTube bağlantı bilgilerini kontrol et
+        shell: bash
+        env:
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for key in YOUTUBE_CLIENT_ID YOUTUBE_CLIENT_SECRET YOUTUBE_REFRESH_TOKEN; do
+            if [ -z "${!key:-}" ]; then missing+=("$key"); fi
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::YouTube yüklemesi için GitHub Secrets eksik: ${missing[*]}"
+            exit 1
+          fi
+          echo "YouTube bağlantı secrets bilgileri bulundu."
+
+      - name: Güncel görsel motor ZIP dosyasını bul ve aç
         id: project
         shell: bash
         env:
           REQUESTED_STORY: ${{ inputs.story }}
         run: |
           set -euo pipefail
-
           EXTRACT_DIR="$GITHUB_WORKSPACE/extracted"
           rm -rf "$EXTRACT_DIR"
           mkdir -p "$EXTRACT_DIR"
 
           ROOT=""
           SELECTED_ZIP=""
+          PREFERRED="$GITHUB_WORKSPACE/KORKU_MOTORU_YUMURTA_STILI_GORSEL_KALITE_GELISTIRILMIS.zip"
 
-          # Once depodaki ZIP dosyalarini kontrol et. Bozuk olanlari atla.
-          shopt -s nullglob
-          for archive in "$GITHUB_WORKSPACE"/*.zip; do
-            [ -f "$archive" ] || continue
-            echo "ZIP kontrol ediliyor: $(basename "$archive")"
-
-            if ! unzip -tq "$archive" >/dev/null 2>&1; then
-              echo "Bozuk ZIP atlandi: $(basename "$archive")"
-              continue
-            fi
-
-            if ! unzip -Z1 "$archive" 2>/dev/null | grep -Eq '(^|/)engine/render\.mjs$'; then
-              echo "Yumurta-Stili motoru bulunmayan ZIP atlandi: $(basename "$archive")"
-              continue
-            fi
-
-            SELECTED_ZIP="$archive"
-            echo "Gecerli motor ZIP'i secildi: $(basename "$archive")"
-            unzip -oq "$SELECTED_ZIP" -d "$EXTRACT_DIR"
-            break
-          done
-          shopt -u nullglob
-
-          # ZIP acildiktan sonra motorun gercek kok klasorunu bul.
-          if [ -n "$SELECTED_ZIP" ]; then
-            RENDER_FILE="$(find "$EXTRACT_DIR" -type f -path '*/engine/render.mjs' -print -quit)"
-            if [ -n "$RENDER_FILE" ]; then
-              ROOT="$(dirname "$(dirname "$RENDER_FILE")")"
+          if [ -f "$PREFERRED" ] && unzip -tq "$PREFERRED" >/dev/null 2>&1; then
+            if unzip -Z1 "$PREFERRED" | grep -Eq '(^|/)engine/render\.mjs$'; then
+              SELECTED_ZIP="$PREFERRED"
             fi
           fi
 
-          # ZIP yoksa, depoda dogrudan bulunan proje klasorlerini de kontrol et.
-          if [ -z "$ROOT" ]; then
-            for candidate in \
-              "$GITHUB_WORKSPACE/KORKU_MOTORU" \
-              "$GITHUB_WORKSPACE/yumurta-stili-main" \
-              "$GITHUB_WORKSPACE"; do
-              if [ -f "$candidate/engine/render.mjs" ]; then
-                ROOT="$candidate"
+          if [ -z "$SELECTED_ZIP" ]; then
+            shopt -s nullglob
+            for archive in "$GITHUB_WORKSPACE"/*.zip; do
+              [ -f "$archive" ] || continue
+              if ! unzip -tq "$archive" >/dev/null 2>&1; then
+                echo "Bozuk ZIP atlandı: $(basename "$archive")"
+                continue
+              fi
+              if unzip -Z1 "$archive" | grep -Eq '(^|/)engine/render\.mjs$'; then
+                SELECTED_ZIP="$archive"
                 break
               fi
+            done
+            shopt -u nullglob
+          fi
+
+          if [ -n "$SELECTED_ZIP" ]; then
+            echo "Kullanılacak ZIP: $(basename "$SELECTED_ZIP")"
+            unzip -oq "$SELECTED_ZIP" -d "$EXTRACT_DIR"
+            RENDER_FILE="$(find "$EXTRACT_DIR" -type f -path '*/engine/render.mjs' -print -quit)"
+            [ -n "$RENDER_FILE" ] && ROOT="$(dirname "$(dirname "$RENDER_FILE")")"
+          fi
+
+          if [ -z "$ROOT" ]; then
+            for candidate in "$GITHUB_WORKSPACE/KORKU_MOTORU" "$GITHUB_WORKSPACE/yumurta-stili-main" "$GITHUB_WORKSPACE"; do
+              if [ -f "$candidate/engine/render.mjs" ]; then ROOT="$candidate"; break; fi
             done
           fi
 
           if [ -z "$ROOT" ] || [ ! -f "$ROOT/engine/render.mjs" ]; then
-            echo "::error::Gecerli ZIP bulunamadi veya ZIP icinde engine/render.mjs yok. Depodaki ZIP dosyalarini kontrol edin."
-            echo "Depodaki ZIP dosyalari:"
-            find "$GITHUB_WORKSPACE" -maxdepth 1 -type f -iname '*.zip' -printf '%f\n' || true
+            echo "::error::Yumurta-Stili motoru içeren geçerli ZIP bulunamadı."
             exit 1
           fi
 
-          # Yeni hikaye klasoru ZIP'te hazir bulunmak zorunda degil.
-          # Sıradaki bolum, sonraki "Sıradaki yeni bölümü hazırla" adiminda uretilir.
           STORY="${REQUESTED_STORY:-son-gorulme}"
+          if [ "$STORY" != "son-gorulme" ]; then
+            echo "::error::Bu otomatik bölüm kuyruğu şu anda yalnızca son-gorulme hikâyesini destekliyor."
+            exit 1
+          fi
 
           echo "root=$ROOT" >> "$GITHUB_OUTPUT"
           echo "story=$STORY" >> "$GITHUB_OUTPUT"
-          echo "Proje kok dizini: $ROOT"
-          echo "Secilen hikaye: $STORY"
-          if [ -n "$SELECTED_ZIP" ]; then
-            echo "Kullanilan ZIP: $(basename "$SELECTED_ZIP")"
+          echo "Proje kökü: $ROOT"
+
+      - name: Bölüm kuyruğu durumunu geri yükle
+        env:
+          PROJECT_ROOT: ${{ steps.project.outputs.root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/.github"
+          STATE="$GITHUB_WORKSPACE/.github/son-gorulme-state.json"
+          if [ -f "$STATE" ]; then
+            cp "$STATE" "$PROJECT_ROOT/automation/queue.json"
+            echo "Kayıtlı bölüm sırası geri yüklendi."
           else
-            echo "Proje ZIP disindan bulundu."
+            echo "İlk çalıştırma: ZIP içindeki bölüm sırası kullanılacak."
           fi
+          test -f "$PROJECT_ROOT/automation/queue.json"
+          test -f "$PROJECT_ROOT/automation/episodes.json"
 
       - name: Node.js kur
         uses: actions/setup-node@v4
@@ -116,7 +138,6 @@ jobs:
           python-version: "3.11"
 
       - name: FFmpeg ve temel paketleri kur
-        shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update
@@ -129,7 +150,7 @@ jobs:
           chrome-version: stable
           install-dependencies: true
 
-      - name: Chrome için headless başlatma sarmalayıcısı
+      - name: Chrome headless başlatma sarmalayıcısı
         shell: bash
         env:
           REAL_CHROME: ${{ steps.chrome.outputs.chrome-path }}
@@ -146,31 +167,30 @@ jobs:
         working-directory: ${{ steps.project.outputs.root }}/engine
         run: npm ci --no-audit --no-fund
 
-      - name: Ses ve hikâye üretim bağımlılıklarını kur
-        run: python -m pip install --upgrade pip numpy edge-tts
+      - name: Ses ve YouTube bağımlılıklarını kur
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy edge-tts google-api-python-client google-auth
 
-      - name: Sıradaki yeni bölümü hazırla
+      - name: Sıradaki bölümü hazırla
+        id: episode
         shell: bash
         env:
           PROJECT_ROOT: ${{ steps.project.outputs.root }}
         run: |
           set -euo pipefail
           cd "$PROJECT_ROOT"
-          QUEUE="$PROJECT_ROOT/automation/queue.json"
-          EPISODES="$PROJECT_ROOT/automation/episodes.json"
-          test -f "$QUEUE"
-          test -f "$EPISODES"
-          EPISODE="$(python -c 'import json; q=json.load(open("automation/queue.json",encoding="utf-8")); print(q.get("next_episode",1))')"
+          EPISODE="$(python -c 'import json; print(json.load(open("automation/queue.json",encoding="utf-8")).get("next_episode",1))')"
           TOTAL="$(python -c 'import json; print(len(json.load(open("automation/episodes.json",encoding="utf-8"))))')"
           if [ "$EPISODE" -lt 1 ] || [ "$EPISODE" -gt "$TOTAL" ]; then
-            echo "::error::Hazirlanacak yeni bolum kalmadi. next_episode=$EPISODE / toplam=$TOTAL"
+            echo "::error::Yüklenecek yeni bölüm kalmadı. next_episode=$EPISODE / toplam=$TOTAL"
             exit 1
           fi
-          echo "Hazirlanan bolum: $EPISODE / $TOTAL"
+          echo "episode=$EPISODE" >> "$GITHUB_OUTPUT"
+          echo "Bölüm $EPISODE / $TOTAL hazırlanıyor."
           python automation/prepare_episode.py "$EPISODE"
 
       - name: Hikâye ve motor dosyalarını doğrula
-        shell: bash
         env:
           PROJECT_ROOT: ${{ steps.project.outputs.root }}
           STORY: ${{ steps.project.outputs.story }}
@@ -179,8 +199,8 @@ jobs:
           test -f "$PROJECT_ROOT/engine/render.mjs"
           test -f "$PROJECT_ROOT/engine/index.html"
           test -f "$PROJECT_ROOT/stories/$STORY/story.js"
-          test -f "$PROJECT_ROOT/stories/$STORY/voice/voice.wav" || echo "UYARI: voice.wav yok; video sessiz üretilecek."
-          echo "Motor ve hikâye dosyaları bulundu."
+          test -s "$PROJECT_ROOT/stories/$STORY/voice/voice.wav"
+          echo "Motor, hikâye ve ses dosyaları hazır."
 
       - name: Ses zamanlamalarını çıkar
         working-directory: ${{ steps.project.outputs.root }}/engine
@@ -198,9 +218,10 @@ jobs:
           set -euo pipefail
           STORY_DIR="$PROJECT_ROOT/stories/$STORY"
           if [ -f "$STORY_DIR/voice/voice.wav" ] && [ -f "$STORY_DIR/audio/cues.json" ]; then
-            python audio/mix.py "$STORY_DIR"
+            python "$PROJECT_ROOT/engine/audio/mix.py" "$STORY_DIR"
           else
-            echo "Ses dosyası veya cues.json yok; miksleme atlandı."
+            echo "::error::Ses veya cues.json eksik; yükleme durduruldu."
+            exit 1
           fi
 
       - name: Videoyu render et
@@ -209,12 +230,84 @@ jobs:
           STORY: ${{ steps.project.outputs.story }}
         run: node render.mjs "$STORY"
 
-      - name: Oluşan videoyu ve render kayıtlarını yükle
+      - name: Render edilen MP4 dosyasını doğrula
+        id: video
+        env:
+          PROJECT_ROOT: ${{ steps.project.outputs.root }}
+          STORY: ${{ steps.project.outputs.story }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$PROJECT_ROOT/stories/$STORY/out"
+          VIDEO="$(find "$OUT" -maxdepth 1 -type f -name '*.mp4' -size +100k -printf '%T@ %p\n' | sort -nr | head -n1 | cut -d' ' -f2-)"
+          if [ -z "$VIDEO" ]; then
+            echo "::error::Render sonrası geçerli MP4 bulunamadı."
+            exit 1
+          fi
+          ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$VIDEO" >/dev/null
+          echo "path=$VIDEO" >> "$GITHUB_OUTPUT"
+          echo "Video doğrulandı: $VIDEO"
+
+      - name: Videoyu YouTube kanalına herkese açık yükle
+        id: youtube
+        env:
+          PROJECT_ROOT: ${{ steps.project.outputs.root }}
+          EPISODE: ${{ steps.episode.outputs.episode }}
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_ROOT"
+          python automation/upload_youtube.py "$EPISODE" | tee "$RUNNER_TEMP/youtube-upload.log"
+          VIDEO_ID="$(sed -n 's/^YOUTUBE_VIDEO_ID=//p' "$RUNNER_TEMP/youtube-upload.log" | tail -n1)"
+          if [ -z "$VIDEO_ID" ]; then
+            echo "::error::YouTube yükleme tamamlandı bilgisi alınamadı."
+            exit 1
+          fi
+          echo "video_id=$VIDEO_ID" >> "$GITHUB_OUTPUT"
+          echo "YouTube video ID: $VIDEO_ID"
+
+      - name: Başarılı yüklemeden sonra bölüm sırasını kaydet
+        if: success()
+        env:
+          PROJECT_ROOT: ${{ steps.project.outputs.root }}
+          EPISODE: ${{ steps.episode.outputs.episode }}
+          VIDEO_ID: ${{ steps.youtube.outputs.video_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - "$PROJECT_ROOT/automation/queue.json" "$GITHUB_WORKSPACE/.github/son-gorulme-state.json" "$EPISODE" "$VIDEO_ID" <<'PY'
+          import json, pathlib, sys
+          source, target, episode, video_id = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), int(sys.argv[3]), sys.argv[4]
+          data = json.loads(source.read_text(encoding="utf-8"))
+          completed = data.setdefault("completed", [])
+          if episode not in completed:
+              completed.append(episode)
+          data["next_episode"] = episode + 1
+          data.setdefault("youtube_video_ids", {})[str(episode)] = video_id
+          target.parent.mkdir(parents=True, exist_ok=True)
+          target.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+          print("Bölüm durumu kaydedildi:", data)
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/son-gorulme-state.json
+          if ! git diff --cached --quiet; then
+            git commit -m "Korku Motoru: YouTube bölüm $EPISODE yüklendi"
+            git push
+          else
+            echo "Bölüm durumu zaten güncel."
+          fi
+
+      - name: Render dosyalarını hata durumunda da sakla
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: render-${{ steps.project.outputs.story }}
+          name: korku-motoru-render-${{ github.run_number }}
           path: |
             ${{ steps.project.outputs.root }}/stories/${{ steps.project.outputs.story }}/out/
+            ${{ steps.project.outputs.root }}/stories/${{ steps.project.outputs.story }}/voice/
           if-no-files-found: warn
           retention-days: 7
