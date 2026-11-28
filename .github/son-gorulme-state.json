@@ -1,11 +1,13 @@
 {
-  "next_episode": 3,
+  "next_episode": 4,
   "completed": [
     1,
-    2
+    2,
+    3
   ],
   "youtube_video_ids": {
     "1": "vSwswrj5zVU",
-    "2": "VHyoZ2seXHw"
+    "2": "VHyoZ2seXHw",
+    "3": "ditqsegnvnk"
   }
 }
